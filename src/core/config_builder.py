@@ -17,9 +17,7 @@ AllowedIPs = {client_ip}/32
 CLIENT_TEMPLATE = """[Interface]
 Address = {client_ip}/32
 PrivateKey = {client_private_key}
-DNS = 1.1.1.1
-
-[Peer]
+{dns_block}[Peer]
 PublicKey = {server_public_key}
 Endpoint = {endpoint}:{port}
 AllowedIPs = 0.0.0.0/0
@@ -43,10 +41,12 @@ def generate_server_config(server, clients):
     )
 
 def generate_client_config(client, server):
+    dns_block = f"DNS = {client['dns']}\n" if client.get("dns") else ""
     return CLIENT_TEMPLATE.format(
         client_ip=client["ip"],
         client_private_key=client["private_key"],
         server_public_key=server["public_key"],
         endpoint=server["endpoint"],
-        port=server["port"]
+        port=server["port"],
+        dns_block=dns_block
     )
