@@ -2,3 +2,26 @@
 *.key
 *.pem
 .env
+#
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+
+# Environment
+venv/
+.env
+*.env
+
+# WireGuard sensitive files
+configs/
+state.json
+*.conf
+!wireguard/**
+
+# QR codes generated for clients
+*.png
+
+# Logs or temp files
+*.log
+tmp/
