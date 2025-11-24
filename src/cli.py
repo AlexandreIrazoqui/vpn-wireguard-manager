@@ -1,170 +1,182 @@
 import argparse
-import os
-
-from core.keys import generate_keypair
-from core.state import (
-    set_server, add_client, find_next_ip,
-    get_server, get_clients, remove_client
-)
-from core.config_builder import generate_server_config, generate_client_config
-
-
-def create_client(name, dns=None):
-    """
-    Fonction centrale pour créer un client :
-    - génère clés
-    - trouve IP dispo
-    - ajoute au state
-    """
-    priv, pub = generate_keypair()
-    ip = find_next_ip()
-
-    client = {
-        "name": name,
-        "ip": ip,
-        "private_key": priv,
-        "public_key": pub,
-        "dns": dns
-    }
-
-    add_client(client)
-    return client
-
-
-def cmd_init_server(args):
-    priv, pub = generate_keypair()
-
-    server = {
-        "ip": "10.8.0.1",
-        "subnet": 24,
-        "private_key": priv,
-        "public_key": pub,
-        "endpoint": args.endpoint,
-        "port": args.port
-    }
-
-    set_server(server)
-    print("[OK] Serveur initialisé.")
-
-
-def cmd_add_client(args):
-    client = create_client(args.name, dns=args.dns)
-    print(f"[OK] Client ajouté : {client['name']} ({client['ip']})")
-
-
-def cmd_list(args):
-    server = get_server()
-    clients = get_clients()
-
-    print("=== Serveur ===")
-    if server:
-        print(f"IP        : {server['ip']}/{server['subnet']}")
-        print(f"Endpoint  : {server['endpoint']}:{server['port']}\n")
-    else:
-        print("Aucun serveur configuré.\n")
-
-    print("=== Clients ===")
-    if not clients:
-        print("Aucun client.")
-    else:
-        for c in clients:
-            print(f"- {c['name']} ({c['ip']})")
-
-
-def cmd_generate_configs(args):
-    server = get_server()
-    clients = get_clients()
-
-    if not server:
-        print("Erreur : serveur non initialisé.")
-        return
-
-    os.makedirs("configs/clients", exist_ok=True)
-
-    # SERVER
-    server_conf = generate_server_config(server, clients)
-    with open("configs/server.conf", "w") as f:
-        f.write(server_conf)
-
-    # CLIENTS
-    for client in clients:
-        conf = generate_client_config(client, server)
-        path = f"configs/clients/{client['name']}.conf"
-        with open(path, "w") as f:
-            f.write(conf)
-
-    print("[OK] Fichiers générés dans ./configs/")
-
-
-def cmd_remove_client(args):
-    removed = remove_client(args.name)
-    if not removed:
-        return
-
-    path = f"configs/clients/{args.name}.conf"
-    if os.path.exists(path):
-        os.remove(path)
-
-    print(f"[OK] Client supprimé : {args.name}")
-
-
+from pathlib import Path
 import qrcode
 
-def cmd_generate_qr(args):
-    server = get_server()
-    clients = get_clients()
+from wg_backend.wireguard import render_client_conf
+from wg_backend.init_server import init_server
+from wg_backend.state import load_state, save_state
+from wg_backend.wireguard import (
+    add_peer,
+    remove_peer,
+    render_client_conf,
+    write_server_conf_to_etc,
+    wg_quick_reload,
+)
 
-    client = next((c for c in clients if c["name"] == args.name), None)
-    if not client:
-        print("Client introuvable.")
+
+# ---------------------------------------------------
+# Commande : init (initialisation du serveur)
+# ---------------------------------------------------
+
+def cmd_init(args):
+    print("[*] Initialisation du serveur WireGuard...")
+
+    state = init_server(
+        interface="wg0",
+        network_cidr="10.8.0.0/24",
+        listen_port=args.port,
+        endpoint=args.endpoint,
+        dns=["1.1.1.1", "8.8.8.8"],
+        state_path=Path("data/state.json"),
+    )
+
+    print("[+] Serveur initialisé.")
+    print("[+] Adresse :", state.server.address)
+    print("[+] Fichier data/state.json créé.")
+
+
+# ---------------------------------------------------
+# Commande : add-peer
+# ---------------------------------------------------
+
+def cmd_add_peer(args):
+    state = load_state()
+
+    peer = add_peer(state, args.name)
+    save_state(state)
+
+    # Regénère wg0.conf et reload
+    path = write_server_conf_to_etc(state)
+    print(f"[+] Fichier serveur mis à jour : {path}")
+    print("[!] Pense à appliquer la config avec :")
+    print(f"    sudo cp {path} /etc/wireguard/wg0.conf && sudo wg-quick down wg0 && sudo wg-quick up wg0")
+
+    print(f"[+] Peer ajouté : {peer.name}")
+    print("[+] Configuration client :")
+    print(render_client_conf(state, args.name))
+
+
+# ---------------------------------------------------
+# Commande : list-peers
+# ---------------------------------------------------
+
+def cmd_list(args):
+    state = load_state()
+
+    print("=== Serveur ===")
+    s = state.server
+    print(f"Interface : {s.interface}")
+    print(f"Adresse   : {s.address}")
+    print(f"Port      : {s.listen_port}")
+    print(f"Endpoint  : {s.endpoint}\n")
+
+    print("=== Peers ===")
+    if not state.peers:
+        print("Aucun peer.")
+    else:
+        for name, p in state.peers.items():
+            print(f"- {name} ({p.ip})")
+
+
+# ---------------------------------------------------
+# Commande : remove-peer
+# ---------------------------------------------------
+
+
+def cmd_remove_peer(args):
+    state = load_state()
+
+    try:
+        remove_peer(state, args.name)
+    except KeyError:
+        print("[ERREUR] Peer introuvable.")
         return
 
-    conf = generate_client_config(client, server)
+    save_state(state)
+
+    # Mise à jour du fichier wg0.conf local
+    path = write_server_conf_to_etc(state)
+    print(f"[OK] Peer supprimé : {args.name}")
+    print(f"[+] Fichier serveur mis à jour : {path}")
+    print("[!] Pense à appliquer la config avec :")
+    print(f"    sudo cp {path} /etc/wireguard/wg0.conf && sudo wg-quick down wg0 && sudo wg-quick up wg0")
+# ---------------------------------------------------
+# Commande : generate-qr
+# ---------------------------------------------------
+
+def cmd_generate_qr(args):
+    state = load_state()
+
+    try:
+        conf = render_client_conf(state, args.name)
+    except KeyError:
+        print("Peer introuvable.")
+        return
 
     img = qrcode.make(conf)
-    path = f"configs/clients/{client['name']}.png"
+    path = f"configs/{args.name}.png"
+
+    Path("configs").mkdir(exist_ok=True)
     img.save(path)
 
     print(f"[OK] QR code généré : {path}")
-#
-# ----------------------------
-# Parser CLI
-# ----------------------------
+
+def cmd_export_peer(args):
+    state = load_state()
+
+    try:
+        conf = render_client_conf(state, args.name)
+    except KeyError:
+        print("[ERREUR] Peer introuvable.")
+        return
+
+    Path("configs").mkdir(exist_ok=True)
+    path = Path(f"configs/{args.name}.conf")
+    path.write_text(conf)
+
+    print(f"[OK] Config générée : {path}")
+    print("\n--- Configuration ---\n")
+    print(conf)
+
+# ---------------------------------------------------
+# CLl / Parser
+# ---------------------------------------------------
 
 def main():
     parser = argparse.ArgumentParser(prog="vpn")
     sub = parser.add_subparsers(dest="cmd")
 
-    # init-server
-    p_init = sub.add_parser("init-server")
-    p_init.add_argument("--endpoint", required=True)
+    # init
+    p_init = sub.add_parser("init")
+    p_init.add_argument("--endpoint", required=False)
     p_init.add_argument("--port", type=int, default=51820)
-    p_init.set_defaults(func=cmd_init_server)
+    p_init.set_defaults(func=cmd_init)
 
-    # add-client
-    p_add = sub.add_parser("add-client")
+    # add-peer
+    p_add = sub.add_parser("add-peer")
     p_add.add_argument("name")
-    p_add.set_defaults(func=cmd_add_client)
+    p_add.set_defaults(func=cmd_add_peer)
 
-    # list
-    p_list = sub.add_parser("list")
+    # list-peers
+    p_list = sub.add_parser("list-peers")
     p_list.set_defaults(func=cmd_list)
 
-    # remove-client
-    p_rm = sub.add_parser("remove-client")
+    # remove-peer
+    p_rm = sub.add_parser("remove-peer")
     p_rm.add_argument("name")
-    p_rm.set_defaults(func=cmd_remove_client)
+    p_rm.set_defaults(func=cmd_remove_peer)
 
+    p_export = sub.add_parser("export-peer")
+    p_export.add_argument("name")
+    p_export.set_defaults(func=cmd_export_peer)
+
+    # generate-qr
     p_qr = sub.add_parser("generate-qr")
     p_qr.add_argument("name")
     p_qr.set_defaults(func=cmd_generate_qr)
 
-    # generate-configs
-    p_gen = sub.add_parser("generate-configs")
-    p_gen.set_defaults(func=cmd_generate_configs)
-
+    # parse
     args = parser.parse_args()
-
     if not hasattr(args, "func"):
         parser.print_help()
         return
