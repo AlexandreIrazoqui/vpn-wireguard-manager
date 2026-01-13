@@ -1,2 +1,1 @@
-qrcode
-pillow
+qrcode[pil]
