@@ -11,6 +11,7 @@ The tool can:
 - render WireGuard configs
 - safely install the server configuration into `/etc/wireguard`
 - bring the tunnel up and down
+- enable a basic iptables firewall/NAT ruleset for VPN routing
 
 All keys are generated locally and are meant to stay private.
 
@@ -86,70 +87,40 @@ This:
 
 ---
 
-### 3. Show VPN status
+### 3. List peers
 
 ```sh
-vpn status
+vpn list-peers
 ```
-
-Displays:
-- interface state
-- WireGuard runtime information (`wg show`)
 
 ---
 
 ### 4. Export configuration files (debug / manual use)
 
+Export one peer config:
+
 ```sh
-vpn export
+vpn export-peer alice
 ```
 
-Outputs:
+Export all peers:
+
+```sh
+vpn export-all
+```
+
+This writes:
 
 ```
-configs/<interface>.conf
+configs/<peer>.conf
 ```
-
-Useful for inspection or manual deployment, without modifying the system.
 
 ---
 
-### 5. Apply the server configuration (root required)
+### 5. Generate a QR code for a peer (mobile)
 
 ```sh
-sudo vpn apply
-```
-
-This command:
-- validates the internal state
-- installs `/etc/wireguard/<interface>.conf` safely
-- backs up any existing configuration
-- brings the interface up using `wg-quick`
-
----
-
-### 6. Enable / disable the tunnel
-
-```sh
-sudo vpn enable
-sudo vpn disable
-```
-
-Equivalent to:
-
-```sh
-wg-quick up <interface>
-wg-quick down <interface>
-```
-
-but guarded by internal state validation.
-
----
-
-### 7. Generate a QR code for a peer (mobile)
-
-```sh
-vpn qr alice
+vpn generate-qr alice
 ```
 
 Creates:
@@ -162,7 +133,96 @@ Scannable by the WireGuard Android / iOS app.
 
 ---
 
-### 8. Diagnostics
+### 6. Apply the server configuration (root required)
+
+```sh
+sudo vpn apply
+```
+
+This command:
+- validates the internal state
+- installs `/etc/wireguard/<interface>.conf` safely
+- backs up any existing configuration
+- restarts the interface using `wg-quick` (unless `--no-restart`)
+
+Disable restart:
+
+```sh
+sudo vpn apply --no-restart
+```
+
+---
+
+### 7. Enable / disable the tunnel
+
+```sh
+sudo vpn enable
+sudo vpn disable
+```
+
+You can override the interface:
+
+```sh
+sudo vpn enable --iface wg0
+sudo vpn disable --iface wg0
+```
+
+---
+
+### 8. Show VPN status
+
+```sh
+vpn status
+```
+
+---
+
+### 9. Firewall / NAT (iptables)
+
+If you want routed VPN traffic (client -> internet), you typically need:
+- IP forwarding enabled
+- NAT (masquerade) + forwarding rules
+
+This project provides a simple iptables-based ruleset:
+
+Enable firewall + NAT:
+
+```sh
+sudo vpn firewall enable
+```
+
+If WAN interface detection fails, specify it:
+
+```sh
+sudo vpn firewall enable --wan eth0
+# or: --wan enp3s0 / wlp2s0 ...
+```
+
+Status:
+
+```sh
+vpn firewall status
+```
+
+Verbose status (prints ruleset when available):
+
+```sh
+vpn firewall status --verbose
+```
+
+Disable:
+
+```sh
+sudo vpn firewall disable
+```
+
+Notes:
+- This firewall setup is intentionally minimal (focused on WireGuard + NAT).
+- Persistence across reboot depends on your distro (iptables rules are not always persistent by default).
+
+---
+
+### 10. Diagnostics
 
 ```sh
 vpn doctor
@@ -174,6 +234,7 @@ Checks:
 - `/etc/wireguard` setup
 - IP forwarding
 - configuration sanity
+- hints about root usage
 
 ---
 
@@ -181,4 +242,3 @@ Checks:
 
 - Client configurations always include a valid `Endpoint` with port
 - IPv6 endpoints are automatically bracketed
-- Firewall and NAT configuration are intentionally left to the user
