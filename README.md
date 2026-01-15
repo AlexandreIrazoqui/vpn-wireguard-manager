@@ -1,115 +1,184 @@
+# ProjetVPN – WireGuard VPN Manager
+
 ## WireGuard configuration structure
 
-This project uses the minimal WireGuard config.
-Example files are provided in: 
-- `wireguard/server/wg0.conf.example`
-- `wireguard/client/client.conf.example`
+This project provides a minimal WireGuard VPN manager with a CLI interface.
 
-The keys are meant to be private, this repository will generate them.
+WireGuard configurations are generated dynamically from an internal state file (`data/state.json`).
+The tool can:
+- generate server and client keys
+- allocate client IPs automatically
+- render WireGuard configs
+- safely install the server configuration into `/etc/wireguard`
+- bring the tunnel up and down
 
+All keys are generated locally and are meant to stay private.
+
+---
 
 ## Installation
 
-### Step 1 : Clone the repository
+### Step 1: Clone the repository
 
 ```sh
 git clone https://github.com/<YOUR_USERNAME>/ProjetVPN.git
 cd ProjetVPN
 ```
 
-### Step 2: Create a virtual environment 
-```sh 
+---
+
+### Step 2: Create a virtual environment
+
+```sh
 python -m venv venv
 source venv/bin/activate
 ```
+
+---
+
 ### Step 3: Install dependencies
+
 ```sh
 pip install -r requirements.txt
 ```
-### Step 4: install the VPN cli (optionnal)
 
-```sh 
+---
+
+### Step 4: Install the VPN CLI (optional)
+
+This allows calling `vpn` directly instead of `python src/cli.py`.
+
+```sh
 sudo cp vpn /usr/local/bin/vpn
 sudo chmod +x /usr/local/bin/vpn
 ```
 
+---
 
+## Usage
 
-## 🧪 Usage
-
-### 1. Initialize the server
+### 1. Initialize the WireGuard server
 
 ```sh
-vpn init-server --endpoint <YOUR_PUBLIC_IP> --port 51820
+vpn init --endpoint <YOUR_PUBLIC_IP_OR_DNS> --port 51820
 ```
 
-This generates server keys and saves the WireGuard server configuration to `state.json`.
+This command:
+- generates the server keypair
+- initializes the VPN network (default: `10.8.0.0/24`)
+- assigns the server address (e.g. `10.8.0.1/24`)
+- creates `data/state.json`
+
+This command does **not** touch `/etc/wireguard`.
 
 ---
 
-### 2. Add a client
+### 2. Add a peer (client)
 
 ```sh
-vpn add-client alice
+vpn add-peer alice
 ```
 
-With a custom DNS:
-
-```sh
-vpn add-client alice --dns 1.1.1.1
-```
+This:
+- allocates a free IP automatically (e.g. `10.8.0.2/32`)
+- generates client keys
+- updates `data/state.json`
 
 ---
 
-### 3. List server and clients
+### 3. Show VPN status
 
 ```sh
-vpn list
+vpn status
 ```
+
+Displays:
+- interface state
+- WireGuard runtime information (`wg show`)
 
 ---
 
-### 4. Remove a client
+### 4. Export configuration files (debug / manual use)
 
 ```sh
-vpn remove-client alice
-```
-
-Removes the client from state and deletes its generated `.conf` file.
-
----
-
-### 5. Generate WireGuard configuration files
-
-```sh
-vpn generate-configs
+vpn export
 ```
 
 Outputs:
 
 ```
-configs/server.conf
-configs/clients/<client>.conf
+configs/<interface>.conf
 ```
+
+Useful for inspection or manual deployment, without modifying the system.
 
 ---
 
-### 6. Generate QR code for mobile import
+### 5. Apply the server configuration (root required)
 
 ```sh
-vpn generate-qr alice
+sudo vpn apply
+```
+
+This command:
+- validates the internal state
+- installs `/etc/wireguard/<interface>.conf` safely
+- backs up any existing configuration
+- brings the interface up using `wg-quick`
+
+---
+
+### 6. Enable / disable the tunnel
+
+```sh
+sudo vpn enable
+sudo vpn disable
+```
+
+Equivalent to:
+
+```sh
+wg-quick up <interface>
+wg-quick down <interface>
+```
+
+but guarded by internal state validation.
+
+---
+
+### 7. Generate a QR code for a peer (mobile)
+
+```sh
+vpn qr alice
 ```
 
 Creates:
 
 ```
-configs/clients/alice.png
+configs/alice.png
 ```
 
-Scannable by the WireGuard Android/iOS app.
+Scannable by the WireGuard Android / iOS app.
 
 ---
 
+### 8. Diagnostics
 
+```sh
+vpn doctor
+```
 
+Checks:
+- required binaries (`wg`, `wg-quick`, `ip`)
+- state file presence
+- `/etc/wireguard` setup
+- IP forwarding
+- configuration sanity
 
+---
+
+## Notes
+
+- Client configurations always include a valid `Endpoint` with port
+- IPv6 endpoints are automatically bracketed
+- Firewall and NAT configuration are intentionally left to the user
