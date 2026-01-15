@@ -6,6 +6,7 @@ import shutil
 import subprocess
 import ipaddress
 import datetime
+import re
 
 from dataclasses import dataclass
 from pathlib import Path
@@ -95,6 +96,44 @@ def generate_preshared_key() -> str:
     return _run_check_output(["wg", "genpsk"])
 
 
+# ---------- Endpoint helper (fix : ajoute le port automatiquement) ----------
+
+def format_endpoint(endpoint: str, port: int) -> str:
+    """
+    Retourne un Endpoint WireGuard valide avec port.
+
+    - IPv4: "1.2.3.4" -> "1.2.3.4:51820"
+    - DNS: "vpn.example.com" -> "vpn.example.com:51820"
+    - IPv6: "2a01:..." -> "[2a01:...]:51820"
+    - IPv6 déjà bracket: "[2a01:...]" -> "[2a01:...]:51820"
+    - Déjà avec port:
+        "1.2.3.4:1234" / "host:1234" / "[2a01:...]:1234" -> inchangé
+    """
+    endpoint = (endpoint or "").strip()
+    if not endpoint:
+        return ""
+
+    # Déjà au format IPv6 bracket + port: [v6]:port
+    if re.match(r"^\[.+\]:\d+$", endpoint):
+        return endpoint
+
+    # Déjà host:port (IPv4 ou DNS) — inchangé
+    # (ne match pas ipv6 sans crochets, volontaire)
+    if re.match(r"^[^:\[\]]+:\d+$", endpoint):
+        return endpoint
+
+    # IPv6 bracket sans port: [v6]
+    if endpoint.startswith("[") and endpoint.endswith("]"):
+        return f"{endpoint}:{port}"
+
+    # IPv6 sans crochets (contient ':') -> on brackette
+    if ":" in endpoint:
+        return f"[{endpoint}]:{port}"
+
+    # IPv4 ou hostname sans port
+    return f"{endpoint}:{port}"
+
+
 # ---------- Gestion des peers ----------
 
 def add_peer(
@@ -182,8 +221,11 @@ def render_client_conf(state: GlobalState, peer_name: str) -> str:
         f"AllowedIPs = {', '.join(p.allowed_ips)}",
     ]
 
+    # ✅ Fix: Endpoint toujours avec port (et IPv6 correctement bracket)
     if getattr(s, "endpoint", None):
-        lines.append(f"Endpoint = {s.endpoint}")
+        ep = format_endpoint(s.endpoint, int(s.listen_port))
+        if ep:
+            lines.append(f"Endpoint = {ep}")
 
     # keepalive utile pour clients derrière NAT (téléphone)
     lines.append("PersistentKeepalive = 25")
@@ -398,10 +440,8 @@ def apply_safe(state: GlobalState, restart: bool = True) -> Path:
 
     return path
 
-# ---------- Diagnostics (vpn doctor) ----------
 
 from dataclasses import dataclass
-import re
 
 @dataclass
 class DoctorCheck:
@@ -516,6 +556,7 @@ def _check_installed_conf(interface: str) -> DoctorCheck:
             details=f"found: {p} (permission denied to stat/read without sudo — ok)",
             fix="Run doctor with sudo if you want full checks: sudo vpn doctor",
         )
+
 
 def _check_conf_sanity(conf_text: str) -> DoctorCheck:
     # Check minimal structure
